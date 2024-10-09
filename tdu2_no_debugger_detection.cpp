@@ -73,6 +73,7 @@ CHECK_REMOTE_DEBUGGER_PRESENT CheckRemoteDebuggerPresent_orig = NULL;
 WINBOOL WINAPI CheckRemoteDebuggerPresent_patched (HANDLE process_handle, PBOOL debugger_present){
 	WINBOOL ret = CheckRemoteDebuggerPresent_orig(process_handle, debugger_present);
 	LOG_VERBOSE("%s: process handle 0x%08lx, debugger_present 0x%08lx (%s), ret %s\n", __func__, process_handle, debugger_present, *debugger_present? "true":"false", ret? "true":"false");
+	*debugger_present = 0;
 	return ret;
 }
 
