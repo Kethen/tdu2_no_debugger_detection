@@ -1,4 +1,5 @@
 #include <windows.h>
+#include <debugapi.h>
 
 // https://github.com/TsudaKageyu/minhook
 #include "MinHook.h"
@@ -17,7 +18,7 @@ int log_fd = -1;
 
 int init_logging(){
 	pthread_mutex_init(&log_mutex, NULL);
-	log_fd = open("./tdu2_no_debugger_detection.txt", O_WRONLY | O_CREAT | O_TRUNC | O_BINARY);
+	log_fd = open("./tdu2_no_debugger_detection_log.txt", O_WRONLY | O_CREAT | O_TRUNC | O_BINARY, 00644);
 	return 0;
 }
 
@@ -48,11 +49,14 @@ int write_data_to_fd(int fd, char *buffer, int len){
 #else
 #define LOG_VERBOSE(...)
 #endif
-WINBOOL (WINAPI *IsDebuggerPresentOrig) (VOID);
-WINBOOL WINAPI IsDebuggerPresentPatched (VOID){
+
+#define STR(s) #s
+
+WINBOOL (WINAPI *IsDebuggerPresent_orig) (VOID);
+WINBOOL WINAPI IsDebuggerPresent_patched (VOID){
 	static int honest = 4;
-	WINBOOL ret = IsDebuggerPresentOrig();
-	LOG_VERBOSE("%s: %s, ", __func__, IsDebuggerPresentOrig()? "debugger is present" : "debugger is not present");
+	WINBOOL ret = IsDebuggerPresent_orig();
+	LOG_VERBOSE("%s: %s, ", __func__, ret? "debugger is present" : "debugger is not present");
 	if(ret && honest){
 		LOG_VERBOSE("not overriding, honest: %d\n");
 		honest--;
@@ -64,18 +68,18 @@ WINBOOL WINAPI IsDebuggerPresentPatched (VOID){
 	return ret;
 }
 
+typedef WINBOOL (WINAPI *CHECK_REMOTE_DEBUGGER_PRESENT) (HANDLE, PBOOL);
+CHECK_REMOTE_DEBUGGER_PRESENT CheckRemoteDebuggerPresent_orig = NULL;
+WINBOOL WINAPI CheckRemoteDebuggerPresent_patched (HANDLE process_handle, PBOOL debugger_present){
+	WINBOOL ret = CheckRemoteDebuggerPresent_orig(process_handle, debugger_present);
+	LOG_VERBOSE("%s: process handle 0x%08lx, debugger_present 0x%08lx (%s), ret %s\n", __func__, process_handle, debugger_present, *debugger_present? "true":"false", ret? "true":"false");
+	return ret;
+}
+
 int hook_functions(){
 	LOG("hook_functions begin\n");
 
 	int ret = 0;
-	/*
-	HMODULE handle = LoadLibraryA("Kernel32.dll");
-	if(handle == NULL){
-		LOG("Failed loading Kernel32.dll\n");
-		return -1;
-	}
-	LOG("Kernel32.dll loaded\n");
-	*/
 
 	ret = MH_Initialize();
 	if(ret != MH_OK){
@@ -83,17 +87,23 @@ int hook_functions(){
 		return -1;
 	}
 
-	LPVOID target;
-	ret = MH_CreateHookApiEx(L"Kernel32.dll", "IsDebuggerPresent", (LPVOID)&IsDebuggerPresentPatched, (void**)&IsDebuggerPresentOrig, &target);
-	if(ret != MH_OK){
-		LOG("Failed hooking Kernel32.dll IsDebuggerPresent, %d\n", ret);
-		return -1;
+	#define CREATE_ENABLE_HOOK(target, replacement, trampoline){ \
+		int ret = MH_CreateHook((LPVOID)&target, (LPVOID)&replacement, (LPVOID *)&trampoline); \
+		if(ret != MH_OK){ \
+			LOG("Failed creating hook for %s, %d\n", STR(target), ret); \
+			return -1; \
+		} \
+		ret = MH_EnableHook((LPVOID)&target); \
+		if(ret != MH_OK){ \
+			LOG("Failed enabling hook for %s, %d\n", STR(target), ret); \
+			return -1; \
+		} \
 	}
-	ret = MH_EnableHook(target);
-	if(ret != MH_OK){
-		LOG("Failed enabling Kernel32.dll IsDebuggerPresent hook");
-		return -1;
-	}
+
+	CREATE_ENABLE_HOOK(IsDebuggerPresent, IsDebuggerPresent_patched, IsDebuggerPresent_orig);
+	CREATE_ENABLE_HOOK(CheckRemoteDebuggerPresent, CheckRemoteDebuggerPresent_patched, CheckRemoteDebuggerPresent_orig);
+
+	#undef CREATE_ENABLE_HOOK
 
 	return 0;
 }
